@@ -15,14 +15,3 @@ allprojects {
         mavenCentral()
     }
 }
-
-// Utility task used by the GitHub Actions rename step
-task printVersionName {
-    doLast {
-        def v = "2.0"
-        try {
-            v = android.defaultConfig.versionName
-        } catch (ignored) {}
-        println v
-    }
-}
