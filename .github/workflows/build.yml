@@ -1,0 +1,97 @@
+name: Build Zesty Proxy APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Java ───────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # ── 3. Gradle permission ──────────────────────────────────────────────────
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ── 4. Build debug APK (no keystore needed) ───────────────────────────────
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      # ── 5. Build release APK (signed if secrets present) ─────────────────────
+      - name: Write keystore from secret (optional)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > zesty-release.jks
+          cat > keystore.properties << EOF
+          storeFile=zesty-release.jks
+          storePassword=${{ secrets.KEY_STORE_PASSWORD }}
+          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyPassword=${{ secrets.KEY_PASSWORD }}
+          EOF
+
+      - name: Build release APK
+        run: |
+          if [ -f keystore.properties ]; then
+            ./gradlew assembleRelease --no-daemon -PinsecureReleaseOk=false --stacktrace
+          else
+            ./gradlew assembleRelease --no-daemon -PinsecureReleaseOk=true --stacktrace
+          fi
+
+      # ── 6. Rename outputs with version + build number ────────────────────────
+      - name: Rename APKs
+        run: |
+          VERSION=$(./gradlew -q printVersionName 2>/dev/null || echo "2.0")
+          BUILD="${{ github.run_number }}"
+          DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
+          RELEASE_APK="app/build/outputs/apk/release/app-release.apk"
+          RELEASE_UNSIGNED="app/build/outputs/apk/release/app-release-unsigned.apk"
+
+          [ -f "$DEBUG_APK" ]   && mv "$DEBUG_APK"   "app/build/outputs/apk/debug/ZestyProxy-v${VERSION}-b${BUILD}-debug.apk"
+          [ -f "$RELEASE_APK" ] && mv "$RELEASE_APK" "app/build/outputs/apk/release/ZestyProxy-v${VERSION}-b${BUILD}-release.apk"
+          [ -f "$RELEASE_UNSIGNED" ] && mv "$RELEASE_UNSIGNED" "app/build/outputs/apk/release/ZestyProxy-v${VERSION}-b${BUILD}-release-unsigned.apk"
+
+      # ── 7. Upload artifacts ───────────────────────────────────────────────────
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZestyProxy-debug-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZestyProxy-release-${{ github.run_number }}
+          path: app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      # ── 8. Summary ────────────────────────────────────────────────────────────
+      - name: Build summary
+        run: |
+          echo "## Zesty Proxy — Build ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| APK | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|------|" >> $GITHUB_STEP_SUMMARY
+          for apk in app/build/outputs/apk/**/*.apk; do
+            [ -f "$apk" ] && echo "| \`$(basename $apk)\` | $(du -sh "$apk" | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Built by [Zesty](https://t.me/zestyji)" >> $GITHUB_STEP_SUMMARY
